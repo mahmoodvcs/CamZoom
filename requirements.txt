@@ -1,0 +1,8 @@
+opencv-python>=5.0
+pystray
+pillow
+keyboard
+pygrabber
+numpy
+# build only
+pyinstaller

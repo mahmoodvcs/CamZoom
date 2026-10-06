@@ -1,0 +1,25 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_DLL
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "CamZoom"
+      VALUE "FileDescription", "CamZoom Camera (DirectShow virtual camera, based on OBS Studio)"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "ProductName", "CamZoom"
+      VALUE "ProductVersion", "1.0.0"
+      VALUE "LegalCopyright", "GPL-2.0-or-later. Contains code from OBS Studio and libdshowcapture."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
