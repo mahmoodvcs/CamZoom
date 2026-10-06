@@ -234,8 +234,8 @@ class App:
 
     @property
     def live(self):
-        """Whether the webcam should be on right now."""
-        return self.enabled and (bool(self.users) or not self.cfg["auto"])
+        """Whether the webcam should be on right now. The preview window counts as an app using the camera."""
+        return self.enabled and (bool(self.users) or self.preview or not self.cfg["auto"])
 
     @property
     def state(self):
