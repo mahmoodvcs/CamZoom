@@ -22,7 +22,6 @@ FILE_MAP_READ = 0x0004
 FILE_MAP_ALL_ACCESS = 0x000F001F
 PAGE_READWRITE = 0x04
 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1)
-ERROR_ALREADY_EXISTS = 183
 PROCESS_DUP_HANDLE = 0x0040
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 DUPLICATE_SAME_ACCESS = 0x0002
@@ -88,12 +87,11 @@ class VirtualCamera:
             offsets.append(size)
             size = _align32(size + FRAME_HEADER_SIZE + frame_size)
 
+        # If the queue already exists, an app still holds it open from our previous run (CamZoom is single
+        # instance, so there is no other writer); take it over. Same size, since the frame size is fixed.
         self._handle = _kernel32.CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, size, QUEUE_NAME)
         if not self._handle:
             raise ctypes.WinError(ctypes.get_last_error())
-        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-            _kernel32.CloseHandle(self._handle)
-            raise RuntimeError("The CamZoom Camera is already being fed by another program")
         self._view = _kernel32.MapViewOfFile(self._handle, FILE_MAP_ALL_ACCESS, 0, 0, 0)
         if not self._view:
             _kernel32.CloseHandle(self._handle)

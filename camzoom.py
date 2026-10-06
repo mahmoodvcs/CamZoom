@@ -462,21 +462,26 @@ class App:
 
     def output(self, camera, img):
         camera.send(img)
-        self.show_preview(img if self.preview else None)
+        try:
+            self.show_preview(img if self.preview else None)
+        except cv2.error:  # a preview problem must never stop the video apps are receiving
+            log.exception("Preview window error")
+            self._preview_open = False
 
     def show_preview(self, img):
         if img is not None:
+            if self._preview_open and cv2.getWindowProperty(PREVIEW_WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                # Closed with its X button: OpenCV already destroyed it.
+                self._preview_open = self.preview = False
+                self.refresh()
+                return
             cv2.imshow(PREVIEW_WINDOW, img)
             cv2.waitKey(1)
             self._preview_open = True
-            if cv2.getWindowProperty(PREVIEW_WINDOW, cv2.WND_PROP_VISIBLE) < 1:  # closed with its X button
-                self.preview = False
-                self.refresh()
-        if img is None or not self.preview:
-            if self._preview_open:
-                cv2.destroyWindow(PREVIEW_WINDOW)
-                cv2.waitKey(1)
-                self._preview_open = False
+        elif self._preview_open:  # turned off from the tray menu
+            cv2.destroyWindow(PREVIEW_WINDOW)
+            cv2.waitKey(1)
+            self._preview_open = False
 
     def run(self):
         self.register_hotkeys()
