@@ -7,12 +7,15 @@ import ctypes
 import json
 import logging
 import os
+import queue
 import sys
 import threading
 import time
+import tkinter as tk
 import winreg
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from tkinter import ttk
 
 # Must be set before cv2 is imported: avoids a multi-second Media Foundation startup delay.
 os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
@@ -21,7 +24,7 @@ import cv2
 import keyboard
 import numpy as np
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 from pygrabber.dshow_graph import FilterGraph
 
 import vcam
@@ -48,6 +51,8 @@ DEFAULTS = {
     "zoom": 1.5,
     "tracking": True,
     "auto": True,  # only turn the webcam on while some app is using the virtual camera
+    "brightness": 0,  # how much to brighten the whole picture, 0-100
+    "shadows": 0,  # how much to brighten dark areas, 0-100
     "hotkeys": {
         "zoom_in": "ctrl+alt+=",
         "zoom_out": "ctrl+alt+-",
@@ -203,6 +208,61 @@ class Framer:
         return cv2.warpAffine(frame, m, (OUT_W, OUT_H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
 
+class Brighten:
+    """Brightens the whole picture the way a longer exposure would: it multiplies the light, then rolls off the
+    highlights (extended Reinhard) so bright areas compress instead of turning white. Unlike Windows' camera
+    Brightness setting, which adds a constant and turns black into gray, black stays black. ~0.5 ms per frame.
+    """
+
+    MAX_STOPS = 3  # at full strength the light is multiplied by 2**3
+
+    def __init__(self):
+        self.amount = None
+        self.lut = None
+
+    def apply(self, img, amount):
+        """amount: 0 (off) to 100."""
+        if amount <= 0:
+            return img
+        if amount != self.amount:
+            self.amount = amount
+            gain = 2 ** (self.MAX_STOPS * amount / 100)
+            light = (np.arange(256) / 255) ** 2.2 * gain  # pixel values are gamma-encoded; exposure acts on light
+            light = light * (1 + light / gain ** 2) / (1 + light)  # maps 0..gain back to 0..1, unchanged at gain 1
+            self.lut = np.round(light ** (1 / 2.2) * 255).astype(np.uint8)
+        return cv2.LUT(img, self.lut)
+
+
+class ShadowLift:
+    """Brightens the dark parts of the picture and leaves the bright parts alone, like a photo editor's Shadows slider.
+
+    How much a pixel is brightened depends on how dark its surroundings are, not on the pixel itself, so detail and
+    contrast within dark areas are kept. The surroundings come from an edge-preserving blur of a small copy of the
+    picture, so a dark face in front of a bright window is brightened evenly right up to its edge. ~2 ms per frame.
+    """
+
+    MAX_GAIN = 4.0  # how much the darkest areas are brightened at full strength
+    SMALL = (OUT_W // 8, OUT_H // 8)
+
+    def __init__(self):
+        self.amount = None
+        self.lut = None
+
+    def apply(self, img, amount):
+        """amount: 0 (off) to 100."""
+        if amount <= 0:
+            return img
+        if amount != self.amount:
+            self.amount = amount
+            level = np.arange(256) / 255
+            gain = 1 + (self.MAX_GAIN - 1) * amount / 100 * (1 - level) ** 6  # falls off fast: midtones barely change
+            self.lut = np.round(gain * 64).astype(np.uint8)  # fixed point, so the multiply below stays in fast uint8
+        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), self.SMALL, interpolation=cv2.INTER_AREA)
+        small = cv2.bilateralFilter(small, 13, 30, 6)
+        gain = cv2.resize(cv2.LUT(small, self.lut), (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
+        return cv2.multiply(img, cv2.cvtColor(gain, cv2.COLOR_GRAY2BGR), scale=1 / 64)
+
+
 def placeholder(*lines):
     img = np.full((OUT_H, OUT_W, 3), 32, np.uint8)
     font, sizes = cv2.FONT_HERSHEY_SIMPLEX, [1.4] + [0.9] * (len(lines) - 1)
@@ -212,6 +272,97 @@ def placeholder(*lines):
         cv2.putText(img, line, ((OUT_W - tw) // 2, y), font, size, (220, 220, 220), 2, cv2.LINE_AA)
         y += th + 30
     return img
+
+
+# --- Settings window ------------------------------------------------------------------------------
+
+class SettingsWindow:
+    """A small Tk window. Tk may only be used from the thread that created it, so it gets a thread of its own,
+    started on first use; closing the window just hides it, and other threads talk to it through a queue."""
+
+    SAVE_DELAY = 500  # ms after the last slider move before the config is written
+
+    def __init__(self, app):
+        self.app = app
+        self.requests = queue.SimpleQueue()
+        self.thread = None
+
+    def show(self):
+        self.requests.put("show")
+        if self.thread is None:
+            self.thread = threading.Thread(target=self.run, name="settings", daemon=True)
+            self.thread.start()
+
+    def close(self):
+        if self.thread is not None:
+            self.requests.put("quit")
+            self.thread.join(timeout=2)  # let Tk shut down in its own thread rather than be cut off at exit
+
+    def run(self):
+        # Otherwise Windows draws the window at 96 DPI and stretches it, which looks blurry on high-DPI screens.
+        try:
+            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-2))  # SYSTEM_AWARE
+        except AttributeError:
+            pass
+        self.root = root = tk.Tk()
+        root.withdraw()
+        root.title(f"{APP} settings")
+        root.resizable(False, False)
+        icon = ImageTk.PhotoImage(make_icon("live"))
+        root.iconphoto(True, icon)
+        root.protocol("WM_DELETE_WINDOW", root.withdraw)
+        self.save_job = None
+
+        frame = ttk.Frame(root, padding=16)
+        frame.grid()
+        self.add_slider(frame, 0, "brightness", "Brightness",
+                        "Brightens the whole picture, like a longer exposure. Unlike\n"
+                        "Windows' camera brightness, black stays black. 0 = off.")
+        self.add_slider(frame, 3, "shadows", "Brighten shadows",
+                        "Brightens dark areas, like a face lit from behind,\n"
+                        "without changing bright areas. 0 = off.")
+        self.preview = tk.BooleanVar(value=self.app.preview)
+        ttk.Checkbutton(frame, text="Show preview", variable=self.preview,
+                        command=lambda: self.app.set_preview(self.preview.get())).grid(row=6, column=0, sticky="w")
+        ttk.Button(frame, text="Close", command=root.withdraw).grid(row=6, column=1, sticky="e")
+
+        self.poll()
+        root.mainloop()
+        root.destroy()
+        self.root = self.preview = None  # Tk objects must also be freed on this thread
+
+    def add_slider(self, frame, row, key, title, hint):
+        """A 0-100 slider for cfg[key], with its value shown on the right; takes three grid rows."""
+        ttk.Label(frame, text=title).grid(row=row, column=0, sticky="w")
+        value_label = ttk.Label(frame, text=str(self.app.cfg[key]), width=4, anchor="e")
+        value_label.grid(row=row, column=1, sticky="e")
+        scale = ttk.Scale(frame, from_=0, to=100, length=360,
+                          command=lambda value: self.on_slider(key, value_label, round(float(value))))
+        scale.set(self.app.cfg[key])
+        scale.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        ttk.Label(frame, foreground="gray", text=hint).grid(row=row + 2, column=0, columnspan=2, sticky="w",
+                                                            pady=(4, 12))
+
+    def on_slider(self, key, value_label, value):
+        if value == self.app.cfg[key]:
+            return
+        self.app.cfg[key] = value  # the video thread picks this up on its next frame
+        value_label.config(text=str(value))
+        if self.save_job:
+            self.root.after_cancel(self.save_job)
+        self.save_job = self.root.after(self.SAVE_DELAY, lambda: save_config(self.app.cfg))
+
+    def poll(self):
+        while not self.requests.empty():
+            if self.requests.get() == "quit":
+                self.root.quit()
+                return
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        if self.preview.get() != self.app.preview:  # changed from the tray menu or the preview's close button
+            self.preview.set(self.app.preview)
+        self.root.after(100, self.poll)
 
 
 # --- App ------------------------------------------------------------------------------------------
@@ -228,6 +379,9 @@ class App:
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.tracker = FaceTracker()
+        self.brighten = Brighten()
+        self.shadow_lift = ShadowLift()
+        self.settings = SettingsWindow(self)
         self.icon = pystray.Icon(APP, make_icon(self.state), APP, self.build_menu())
         self._preview_open = False
         self._warned_vcam = False
@@ -270,7 +424,10 @@ class App:
         self.refresh()
 
     def toggle_preview(self):
-        self.preview = not self.preview
+        self.set_preview(not self.preview)
+
+    def set_preview(self, on):
+        self.preview = on
         self.refresh()
 
     def toggle_startup(self):
@@ -284,6 +441,8 @@ class App:
     def quit(self):
         self.stop.set()
         keyboard.unhook_all()
+        self.settings.close()
+        save_config(self.cfg)  # the settings window saves with a short delay; don't lose a change made just now
         self.icon.stop()
 
     def save_and_refresh(self):
@@ -334,6 +493,7 @@ class App:
             sep,
             item("Source camera", pystray.Menu(camera_items)),
             item("Show preview", self.toggle_preview, checked=lambda _: self.preview),
+            item("Settings...", self.settings.show),
             item("Start with Windows", self.toggle_startup, checked=lambda _: startup_enabled()),
             sep,
             item("Quit", self.quit),
@@ -452,7 +612,9 @@ class App:
                     cap, framer, retry_at = None, Framer(), time.monotonic() + 3
                     continue
                 tracking = self.cfg["tracking"]
-                self.output(camera, framer.render(frame, self.cfg["zoom"], tracking))
+                img = framer.render(frame, self.cfg["zoom"], tracking)
+                img = self.brighten.apply(img, self.cfg["brightness"])
+                self.output(camera, self.shadow_lift.apply(img, self.cfg["shadows"]))
                 if tracking and frame_no % DETECT_EVERY == 0:
                     framer.see_face(self.tracker.find(frame))
                 frame_no += 1

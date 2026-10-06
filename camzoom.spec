@@ -4,7 +4,7 @@ a = Analysis(
     ["camzoom.py"],
     datas=[("models/face_detection_yunet_2023mar.onnx", "models")],
     hiddenimports=["pystray._win32"],
-    excludes=["tkinter", "unittest", "pydoc", "pyvirtualcam"],
+    excludes=["unittest", "pydoc", "pyvirtualcam"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(

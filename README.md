@@ -8,6 +8,9 @@ camera in your meeting app; it shows your real webcam, cropped and zoomed.
 
 - **Zoom** from 1× to 4× with hotkeys
 - **Face tracking**: the zoomed frame smoothly follows your face
+- **Brightness** like a longer exposure (black stays black, highlights roll off instead of clipping)
+- **Brighten shadows**: lifts dark areas (like a face lit from behind by a window) without changing
+  the bright ones
 - **Turns your webcam on only while an app is using CamZoom Camera**, so the webcam light is off the
   rest of the time and your meeting app's camera button keeps working as usual
 - Starts with Windows (optional)
@@ -31,7 +34,13 @@ Windows 10/11, 64-bit.
 | Ctrl+Alt+C | Camera enabled/disabled |
 
 Left-click the tray icon to enable/disable the camera; right-click for the menu (zoom, which webcam
-to use, a preview window, start with Windows).
+to use, a preview window, settings, start with Windows).
+
+**Settings...** opens a window with the **Brightness** and **Brighten shadows** sliders (0 = off).
+Changes show up live; tick **Show preview** there to watch the effect while you adjust them.
+
+Many webcams start out bright and then darken over a second or two as their auto-exposure settles.
+If you liked the picture before it darkened, **Brightness** gets you close to it.
 
 Tray icon: **green** = webcam on, **gray** = waiting for an app to use the camera, **red slash** =
 disabled (apps see a "Camera off" card).
@@ -45,7 +54,10 @@ CamZoom afterwards). The log is `%APPDATA%\CamZoom\camzoom.log`.
 ## How it works
 
 - The **app** (`camzoom.py`, Python) reads your webcam with OpenCV, crops and scales it, and finds
-  your face with OpenCV's YuNet model. It writes the frames into a shared-memory queue.
+  your face with OpenCV's YuNet model. Brightness is a lookup table that multiplies the light
+  (undoing the gamma curve first) and rolls off the highlights. Brighten shadows scales each pixel by how dark its
+  surroundings are (an edge-preserving blur of a small copy of the frame), which takes about 2 ms per
+  frame. It writes the frames into a shared-memory queue.
 - The **driver** (`driver/`, C++) is a DirectShow virtual camera built from
   [OBS Studio](https://obsproject.com/)'s virtual camera. Meeting apps load it like any webcam, and
   it shows the frames from the queue. See [driver/README.md](driver/README.md) for what was changed.
