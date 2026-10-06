@@ -9,6 +9,7 @@ AppId={{6F1B2C3D-8E4A-4B5C-9D7E-2A1F0C3B4D5E}
 AppName=CamZoom
 AppVersion={#AppVersion}
 AppPublisher=CamZoom
+AppPublisherURL=https://github.com/mahmoodvcs/CamZoom
 DefaultDirName={autopf}\CamZoom
 DefaultGroupName=CamZoom
 DisableProgramGroupPage=yes
