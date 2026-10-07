@@ -312,45 +312,53 @@ class SettingsWindow:
         root.iconphoto(True, icon)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         self.save_job = None
+        self.sliders = {}
 
         frame = ttk.Frame(root, padding=16)
         frame.grid()
-        self.add_slider(frame, 0, "brightness", "Brightness",
+        hk = {k: hotkey_label(v) for k, v in self.app.cfg["hotkeys"].items()}
+        self.add_slider(frame, 0, "zoom", "Zoom",
+                        f"How far to zoom in; 1× shows the whole picture. Hotkeys:\n"
+                        f"{hk['zoom_in']} in, {hk['zoom_out']} out, {hk['zoom_reset']} reset.",
+                        low=MIN_ZOOM, high=MAX_ZOOM, snap=lambda v: round(v, 2), fmt=lambda v: f"{v:.1f}×")
+        self.add_slider(frame, 3, "brightness", "Brightness",
                         "Brightens the whole picture, like a longer exposure. Unlike\n"
                         "Windows' camera brightness, black stays black. 0 = off.")
-        self.add_slider(frame, 3, "shadows", "Brighten shadows",
+        self.add_slider(frame, 6, "shadows", "Brighten shadows",
                         "Brightens dark areas, like a face lit from behind,\n"
                         "without changing bright areas. 0 = off.")
         self.preview = tk.BooleanVar(value=self.app.preview)
         ttk.Checkbutton(frame, text="Show preview", variable=self.preview,
-                        command=lambda: self.app.set_preview(self.preview.get())).grid(row=6, column=0, sticky="w")
-        ttk.Button(frame, text="Close", command=root.withdraw).grid(row=6, column=1, sticky="e")
+                        command=lambda: self.app.set_preview(self.preview.get())).grid(row=9, column=0, sticky="w")
+        ttk.Button(frame, text="Close", command=root.withdraw).grid(row=9, column=1, sticky="e")
 
         self.poll()
         root.mainloop()
         root.destroy()
-        self.root = self.preview = None  # Tk objects must also be freed on this thread
+        self.root = self.preview = self.sliders = None  # Tk objects must also be freed on this thread
 
-    def add_slider(self, frame, row, key, title, hint):
-        """A 0-100 slider for cfg[key], with its value shown on the right; takes three grid rows."""
+    def add_slider(self, frame, row, key, title, hint, low=0, high=100, snap=round, fmt=str):
+        """A slider for cfg[key], with its value shown on the right; takes three grid rows.
+        snap rounds the slider position to a stored value, fmt turns a value into the text shown."""
         ttk.Label(frame, text=title).grid(row=row, column=0, sticky="w")
-        value_label = ttk.Label(frame, text=str(self.app.cfg[key]), width=4, anchor="e")
+        value_label = ttk.Label(frame, text=fmt(self.app.cfg[key]), width=5, anchor="e")
         value_label.grid(row=row, column=1, sticky="e")
-        scale = ttk.Scale(frame, from_=0, to=100, length=360,
-                          command=lambda value: self.on_slider(key, value_label, round(float(value))))
+        scale = ttk.Scale(frame, from_=low, to=high, length=360,
+                          command=lambda value: self.on_slider(key, value_label, snap(float(value)), fmt))
         scale.set(self.app.cfg[key])
+        self.sliders[key] = scale, value_label, snap, fmt
         scale.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Label(frame, foreground="gray", text=hint).grid(row=row + 2, column=0, columnspan=2, sticky="w",
                                                             pady=(4, 12))
 
-    def on_slider(self, key, value_label, value):
+    def on_slider(self, key, value_label, value, fmt):
         if value == self.app.cfg[key]:
             return
         self.app.cfg[key] = value  # the video thread picks this up on its next frame
-        value_label.config(text=str(value))
+        value_label.config(text=fmt(value))
         if self.save_job:
             self.root.after_cancel(self.save_job)
-        self.save_job = self.root.after(self.SAVE_DELAY, lambda: save_config(self.app.cfg))
+        self.save_job = self.root.after(self.SAVE_DELAY, self.app.save_and_refresh)  # refresh: tray shows the zoom
 
     def poll(self):
         while not self.requests.empty():
@@ -362,6 +370,11 @@ class SettingsWindow:
             self.root.focus_force()
         if self.preview.get() != self.app.preview:  # changed from the tray menu or the preview's close button
             self.preview.set(self.app.preview)
+        for key, (scale, value_label, snap, fmt) in self.sliders.items():  # zoom also changes from hotkeys and tray
+            value = self.app.cfg[key]
+            if snap(scale.get()) != value:
+                scale.set(value)
+                value_label.config(text=fmt(value))
         self.root.after(100, self.poll)
 
 
